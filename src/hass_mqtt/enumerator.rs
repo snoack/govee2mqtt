@@ -7,7 +7,10 @@ use crate::hass_mqtt::light::DeviceLight;
 use crate::hass_mqtt::number::WorkModeNumber;
 use crate::hass_mqtt::scene::SceneConfig;
 use crate::hass_mqtt::select::{SceneModeSelect, WorkModeSelect};
-use crate::hass_mqtt::sensor::{CapabilitySensor, DeviceStatusDiagnostic, GlobalFixedDiagnostic};
+use crate::hass_mqtt::sensor::{
+    CapabilitySensor, DeviceStatusDiagnostic, EnergyMonitoringSensor, GlobalFixedDiagnostic,
+    ENERGY_MONITORING_READINGS,
+};
 use crate::hass_mqtt::switch::CapabilitySwitch;
 use crate::hass_mqtt::work_mode::ParsedWorkMode;
 use crate::platform_api::{DeviceCapability, DeviceCapabilityKind, DeviceType};
@@ -155,6 +158,12 @@ pub async fn enumerate_entities_for_device(
 
     entities.add(DeviceStatusDiagnostic::new(d, state));
     entities.add(ButtonConfig::request_platform_data_for_device(d));
+
+    if d.supports_energy_monitoring() {
+        for reading in &ENERGY_MONITORING_READINGS {
+            entities.add(EnergyMonitoringSensor::new(d, state, reading));
+        }
+    }
 
     if d.supports_rgb() || d.get_color_temperature_range().is_some() || d.supports_brightness() {
         entities.add(DeviceLight::for_device(d, state, None).await?);

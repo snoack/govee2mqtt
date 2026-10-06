@@ -1,4 +1,4 @@
-use crate::ble::NotifyHumidifierNightlightParams;
+use crate::ble::{NotifyEnergyMonitoring, NotifyHumidifierNightlightParams};
 use crate::commands::serve::POLL_INTERVAL;
 use crate::lan_api::{DeviceColor, DeviceStatus as LanDeviceStatus, LanDevice};
 use crate::platform_api::{
@@ -41,10 +41,16 @@ pub struct Device {
     pub humidifier_work_mode: Option<u8>,
     pub humidifier_param_by_mode: HashMap<u8, u8>,
 
+    /// The most recent energy monitoring readings and when they arrived
+    pub energy_monitoring: Option<(DateTime<Utc>, NotifyEnergyMonitoring)>,
+    pub last_energy_monitoring_poll: Option<DateTime<Utc>>,
+
     pub last_polled: Option<DateTime<Utc>>,
 
     active_scene: Option<ActiveSceneInfo>,
 }
+
+const ENERGY_MONITORING_POLL_INTERVAL: chrono::Duration = chrono::Duration::seconds(60);
 
 impl std::fmt::Display for Device {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -183,6 +189,40 @@ impl Device {
 
     pub fn set_target_humidity(&mut self, percent: u8) {
         self.target_humidity_percent.replace(percent);
+    }
+
+    pub fn set_energy_monitoring(&mut self, report: NotifyEnergyMonitoring) {
+        self.energy_monitoring.replace((Utc::now(), report));
+    }
+
+    pub fn energy_monitoring_report(&self) -> Option<&NotifyEnergyMonitoring> {
+        self.energy_monitoring.as_ref().map(|(_, report)| report)
+    }
+
+    pub fn set_last_energy_monitoring_poll(&mut self) {
+        self.last_energy_monitoring_poll.replace(Utc::now());
+    }
+
+    pub fn supports_energy_monitoring(&self) -> bool {
+        self.resolve_quirk()
+            .map(|quirk| quirk.energy_monitoring)
+            .unwrap_or(false)
+    }
+
+    pub fn energy_monitoring_poll_due(&self) -> bool {
+        self.last_energy_monitoring_poll
+            .map(|last| Utc::now() - last >= ENERGY_MONITORING_POLL_INTERVAL)
+            .unwrap_or(true)
+    }
+
+    /// Discards the energy monitoring readings once they are too old
+    /// to reflect the current state of the plug, which happens when
+    /// it stops answering our polls.
+    /// Returns true if readings were discarded.
+    pub fn expire_energy_monitoring(&mut self) -> bool {
+        self.energy_monitoring
+            .take_if(|(updated, _)| Utc::now() - *updated > ENERGY_MONITORING_POLL_INTERVAL * 5)
+            .is_some()
     }
 
     pub fn set_humidifier_work_mode_and_param(&mut self, mode: u8, param: u8) {
@@ -598,6 +638,25 @@ impl Device {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn energy_monitoring_expiry() {
+        let mut device = Device::new("H5086", "AA:BB:CC:DD:EE:FF:42:2A");
+        assert!(!device.expire_energy_monitoring());
+
+        device.set_energy_monitoring(NotifyEnergyMonitoring::default());
+        assert!(!device.expire_energy_monitoring());
+        assert!(device.energy_monitoring.is_some());
+
+        device.energy_monitoring = Some((
+            Utc::now() - ENERGY_MONITORING_POLL_INTERVAL * 6,
+            NotifyEnergyMonitoring::default(),
+        ));
+        assert!(device.expire_energy_monitoring());
+        assert!(device.energy_monitoring.is_none());
+        // Only reported once
+        assert!(!device.expire_energy_monitoring());
+    }
 
     #[test]
     fn name_compute() {

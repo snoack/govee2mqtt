@@ -442,6 +442,9 @@ async fn run_iot_subscriber(
                                                     mode, param,
                                                 );
                                             }
+                                            GoveeBlePacket::NotifyEnergyMonitoring(report) => {
+                                                device.set_energy_monitoring(report);
+                                            }
                                             GoveeBlePacket::Generic(_) => {
                                                 // Ignore packets that we can't decode
                                             }

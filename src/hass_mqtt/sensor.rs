@@ -1,3 +1,4 @@
+use crate::ble::NotifyEnergyMonitoring;
 use crate::commands::serve::POLL_INTERVAL;
 use crate::hass_mqtt::base::{Device, EntityConfig, Origin};
 use crate::hass_mqtt::humidifier::DEVICE_CLASS_HUMIDITY;
@@ -222,6 +223,143 @@ impl EntityInstance for CapabilitySensor {
             instance = self.instance_name
         );
         Ok(())
+    }
+}
+
+pub struct EnergyMonitoringReading {
+    name: &'static str,
+    id: &'static str,
+    device_class: &'static str,
+    unit_of_measurement: &'static str,
+    state_class: StateClass,
+    diagnostic: bool,
+    format: fn(&NotifyEnergyMonitoring) -> Option<String>,
+}
+
+/// The plug resets its counters when it loses power, which
+/// total_increasing handles as the start of a new cycle
+pub static ENERGY_MONITORING_READINGS: [EnergyMonitoringReading; 6] = [
+    EnergyMonitoringReading {
+        name: "Power",
+        id: "power",
+        device_class: "power",
+        unit_of_measurement: "W",
+        state_class: StateClass::Measurement,
+        diagnostic: false,
+        format: |r| Some(format!("{:.2}", r.power())),
+    },
+    EnergyMonitoringReading {
+        name: "Energy",
+        id: "energy",
+        device_class: "energy",
+        unit_of_measurement: "kWh",
+        state_class: StateClass::TotalIncreasing,
+        diagnostic: false,
+        format: |r| Some(format!("{:.4}", r.energy_kwh())),
+    },
+    EnergyMonitoringReading {
+        name: "Voltage",
+        id: "voltage",
+        device_class: "voltage",
+        unit_of_measurement: "V",
+        state_class: StateClass::Measurement,
+        diagnostic: false,
+        format: |r| Some(format!("{:.2}", r.voltage())),
+    },
+    EnergyMonitoringReading {
+        name: "Current",
+        id: "current",
+        device_class: "current",
+        unit_of_measurement: "A",
+        state_class: StateClass::Measurement,
+        diagnostic: false,
+        format: |r| r.current().map(|v| format!("{v:.2}")),
+    },
+    EnergyMonitoringReading {
+        name: "Power Factor",
+        id: "power-factor",
+        device_class: "power_factor",
+        unit_of_measurement: "%",
+        state_class: StateClass::Measurement,
+        diagnostic: false,
+        format: |r| r.power_factor().map(|v| v.to_string()),
+    },
+    EnergyMonitoringReading {
+        name: "On Time",
+        id: "on-time",
+        device_class: "duration",
+        unit_of_measurement: "s",
+        state_class: StateClass::TotalIncreasing,
+        diagnostic: true,
+        format: |r| Some(r.on_time_seconds().to_string()),
+    },
+];
+
+/// Represents an unknown value to the hass mqtt sensor
+const PAYLOAD_NONE: &str = "None";
+
+pub struct EnergyMonitoringSensor {
+    sensor: SensorConfig,
+    device_id: String,
+    state: StateHandle,
+    reading: &'static EnergyMonitoringReading,
+}
+
+impl EnergyMonitoringSensor {
+    pub fn new(
+        device: &ServiceDevice,
+        state: &StateHandle,
+        reading: &'static EnergyMonitoringReading,
+    ) -> Self {
+        let unique_id = format!(
+            "sensor-{id}-energy-monitoring-{reading}",
+            id = topic_safe_id(device),
+            reading = reading.id
+        );
+
+        Self {
+            sensor: SensorConfig {
+                base: EntityConfig {
+                    availability_topic: availability_topic(),
+                    name: Some(reading.name.to_string()),
+                    entity_category: reading.diagnostic.then(|| "diagnostic".to_string()),
+                    origin: Origin::default(),
+                    device: Device::for_device(device),
+                    unique_id: unique_id.clone(),
+                    device_class: Some(reading.device_class),
+                    icon: None,
+                },
+                state_topic: format!("gv2mqtt/sensor/{unique_id}/state"),
+                state_class: Some(reading.state_class),
+                unit_of_measurement: Some(reading.unit_of_measurement),
+                json_attributes_topic: None,
+            },
+            device_id: device.id.to_string(),
+            state: state.clone(),
+            reading,
+        }
+    }
+}
+
+#[async_trait]
+impl EntityInstance for EnergyMonitoringSensor {
+    async fn publish_config(&self, state: &StateHandle, client: &HassClient) -> anyhow::Result<()> {
+        self.sensor.publish(state, client).await
+    }
+
+    async fn notify_state(&self, client: &HassClient) -> anyhow::Result<()> {
+        let device = self
+            .state
+            .device_by_id(&self.device_id)
+            .await
+            .expect("device to exist");
+
+        let value = device
+            .energy_monitoring_report()
+            .and_then(self.reading.format)
+            .unwrap_or_else(|| PAYLOAD_NONE.to_string());
+
+        self.sensor.notify_state(client, &value).await
     }
 }
 
