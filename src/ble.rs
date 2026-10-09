@@ -474,9 +474,10 @@ pub struct SetDevicePower {
 /// decoder doesn't verify it anyway.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct NotifyEnergyMonitoring {
-    /// Seconds that the plug has been switched on since it was powered up
+    /// Seconds that the plug has been switched on since local midnight.
+    /// Like energy, it's reset after a reboot until the plug restores it.
     pub on_time_seconds: BigEndian24,
-    /// Energy used since the plug was powered up, in units of 0.1Wh
+    /// Energy used since local midnight, in units of 0.1Wh
     pub energy_deciwatt_hours: BigEndian24,
     /// Line voltage in units of 0.01V
     pub voltage_centivolts: BigEndian16,
@@ -514,10 +515,6 @@ impl NotifyEnergyMonitoring {
 
     pub fn energy_kwh(&self) -> f64 {
         self.energy_deciwatt_hours.0 as f64 / 10_000.
-    }
-
-    pub fn on_time_seconds(&self) -> u32 {
-        self.on_time_seconds.0
     }
 }
 

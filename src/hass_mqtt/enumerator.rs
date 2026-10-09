@@ -159,7 +159,12 @@ pub async fn enumerate_entities_for_device(
     entities.add(DeviceStatusDiagnostic::new(d, state));
     entities.add(ButtonConfig::request_platform_data_for_device(d));
 
-    if d.supports_energy_monitoring() {
+    // The readings only arrive via IoT
+    let iot_reachable = d
+        .undoc_device_info
+        .as_ref()
+        .is_some_and(|info| info.entry.device_topic().is_ok());
+    if d.supports_energy_monitoring() && iot_reachable {
         for reading in &ENERGY_MONITORING_READINGS {
             entities.add(EnergyMonitoringSensor::new(d, state, reading));
         }

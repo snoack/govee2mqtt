@@ -328,6 +328,25 @@ struct StateUpdate {
     pub color_temperature_kelvin: Option<u32>,
     pub sku: Option<String>,
     pub device: Option<String>,
+    /// Kept as a plain value, so that devices sending something else
+    /// here can't break the parsing of the whole packet
+    pub sta: Option<serde_json::Value>,
+}
+
+impl StateUpdate {
+    /// sta.stc holds underscore separated numbers, eg: "19_0_77_40_1".
+    /// Seen with the H5086, where the fourth number is the uptime
+    /// in seconds: it restarts when the plug reboots
+    fn uptime_seconds(&self) -> Option<u64> {
+        self.sta
+            .as_ref()?
+            .get("stc")?
+            .as_str()?
+            .split('_')
+            .nth(3)?
+            .parse()
+            .ok()
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -444,6 +463,12 @@ async fn run_iot_subscriber(
                                             }
                                             GoveeBlePacket::NotifyEnergyMonitoring(report) => {
                                                 device.set_energy_monitoring(report);
+                                                // Without uptime we couldn't tell a reboot
+                                                // from a reset, so such a reading isn't tracked
+                                                if let Some(uptime) = packet.state.uptime_seconds()
+                                                {
+                                                    device.update_energy_counter(&report, uptime);
+                                                }
                                             }
                                             GoveeBlePacket::Generic(_) => {
                                                 // Ignore packets that we can't decode
@@ -511,4 +536,27 @@ async fn run_iot_subscriber(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn uptime_from_sta() {
+        // Captured from an H5086, trimmed
+        let packet: Packet = from_json(
+            r#"{"sku":"H5086","device":"08:E3:98:17:3C:95:2F:EE","cmd":"status",
+               "state":{"onOff":1,"sta":{"stc":"19_0_77_40_1"},"result":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(packet.state.uptime_seconds(), Some(40));
+        assert_eq!(packet.state.on_off, Some(1));
+
+        // Other shapes don't break parsing the rest of the packet
+        let packet: Packet =
+            from_json(r#"{"sku":"H6008","device":"x","state":{"onOff":0,"sta":5}}"#).unwrap();
+        assert_eq!(packet.state.uptime_seconds(), None);
+        assert_eq!(packet.state.on_off, Some(0));
+    }
 }
